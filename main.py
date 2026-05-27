@@ -1,13 +1,13 @@
 import os
 import sys
-import requests
-import zipfile
-import tempfile
 import shutil
 import subprocess
 import platform
+import tempfile
+import zipfile
 from pathlib import Path
 import argparse
+import importlib.util
 
 GITHUB_OWNER = "HyperSonic-Games"
 GITHUB_REPO = "Magma"
@@ -62,6 +62,10 @@ main :: proc() {
 """
 
 
+# -----------------------------
+# GitHub download
+# -----------------------------
+
 def download_zip(ref: str, out_path: Path):
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/zipball/{ref}"
     headers = {"Accept": "application/vnd.github+json"}
@@ -82,7 +86,7 @@ def safe_extract(zip_path: Path, dst: Path):
         for member in z.namelist():
             target = (dst / member).resolve()
             if not str(target).startswith(str(dst.resolve())):
-                raise RuntimeError("Unsafe zip path detected (zip-slip)")
+                raise RuntimeError("Unsafe zip path detected")
 
         z.extractall(dst)
 
@@ -113,12 +117,39 @@ def setup_project_files(project_dir: Path):
     (project_dir / "LICENSE").write_text("", encoding="utf-8")
 
 
+# -----------------------------
+# Odin toolchain
+# -----------------------------
+
 def find_odin():
     odin = shutil.which("odin")
     if not odin:
         raise RuntimeError("odin not found in PATH")
     return odin
 
+
+# -----------------------------
+# Build.py pipeline hook
+# -----------------------------
+
+def run_build_pipeline(project_dir: Path):
+    build_file = project_dir / "Build.py"
+
+    if not build_file.exists():
+        return
+
+    print("[ASSETS] Running Build.py pipeline...")
+
+    subprocess.run(
+        [sys.executable, str(build_file)],
+        cwd=project_dir,
+        check=True
+    )
+
+
+# -----------------------------
+# Build project
+# -----------------------------
 
 def run_build(project_name: str, args: list[str]):
     project_dir = Path(project_name).resolve()
@@ -129,39 +160,36 @@ def run_build(project_name: str, args: list[str]):
     no_assets = "-no-assets-bundle" in args
     args = [a for a in args if a != "-no-assets-bundle"]
 
-    # clean build folder
     if build_dir.exists():
         shutil.rmtree(build_dir)
 
     build_dir.mkdir(parents=True, exist_ok=True)
 
-    # build project
     cmd = [odin, "build", "."] + args
     print("Running:", " ".join(cmd))
 
     subprocess.run(cmd, cwd=project_dir, check=True)
 
+    # run asset pipeline (Build.py owns deps/copy logic)
+    if not no_assets:
+        run_build_pipeline(project_dir)
+
     system = platform.system().lower()
     exe_ext = ".exe" if system == "windows" else ""
 
-    # assume default Odin output name = project folder name
     binary_name = project_dir.name + exe_ext
     binary_path = project_dir / binary_name
 
     final_assets = project_dir / "assets"
 
-    # ensure build structure
     (build_dir / "assets").mkdir(parents=True, exist_ok=True)
 
-    # move binary
     if binary_path.exists():
         shutil.move(str(binary_path), str(build_dir / binary_name))
 
-    # copy assets only
     if final_assets.exists() and not no_assets:
         shutil.copytree(final_assets, build_dir / "assets", dirs_exist_ok=True)
 
-    # zip build
     zip_path = project_dir / "build.zip"
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
@@ -171,8 +199,26 @@ def run_build(project_name: str, args: list[str]):
 
     print("Build complete:", zip_path)
 
-    # cleanup build directory
     shutil.rmtree(build_dir, ignore_errors=True)
+
+
+# -----------------------------
+# Create project
+# -----------------------------
+
+def download_zip(ref: str, out_path: Path):
+    import requests
+
+    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/zipball/{ref}"
+    headers = {"Accept": "application/vnd.github+json"}
+
+    r = requests.get(url, headers=headers, stream=True, timeout=60)
+    r.raise_for_status()
+
+    with out_path.open("wb") as f:
+        for chunk in r.iter_content(chunk_size=1024 * 256):
+            if chunk:
+                f.write(chunk)
 
 
 def create_project(ref: str, project_name: str):
@@ -194,35 +240,30 @@ def create_project(ref: str, project_name: str):
         setup_project_files(project_dir)
 
     finally:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except PermissionError:
-            pass
+        tmp_path.unlink(missing_ok=True)
 
     print("Done.")
 
 
+# -----------------------------
+# CLI
+# -----------------------------
+
 def main():
     parser = argparse.ArgumentParser(
         prog="magma-sdk",
-        description="Magma SDK CLI tool for creating and building projects"
+        description="Magma SDK CLI tool"
     )
 
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    c = sub.add_parser(
-        "create",
-        help="Create a new Magma project from a GitHub reference"
-    )
-    c.add_argument("ref", help="Git ref/tag/branch (use 'none' for default main)")
-    c.add_argument("project", help="Project directory name")
+    c = sub.add_parser("create")
+    c.add_argument("ref")
+    c.add_argument("project")
 
-    b = sub.add_parser(
-        "build",
-        help="Build an existing Magma project"
-    )
-    b.add_argument("project", help="Project directory")
-    b.add_argument("args", nargs=argparse.REMAINDER, help="Extra Odin build args")
+    b = sub.add_parser("build")
+    b.add_argument("project")
+    b.add_argument("args", nargs=argparse.REMAINDER)
 
     args = parser.parse_args()
 
