@@ -7,7 +7,6 @@ import tempfile
 import zipfile
 from pathlib import Path
 import argparse
-import importlib.util
 import requests
 
 GITHUB_OWNER = "HyperSonic-Games"
@@ -15,7 +14,7 @@ GITHUB_REPO = "Magma"
 
 
 # -----------------------------
-# BUILD FILE TEMPLATE (FIXED)
+# BUILD FILE TEMPLATE
 # -----------------------------
 
 BUILD_FILE_TEMPLATE = """
@@ -191,6 +190,7 @@ def setup_project_files(project_dir: Path):
     (project_dir / "main.odin").write_text(MAIN_FILE_TEMPLATE, encoding="utf-8")
     (project_dir / "README.md").write_text("", encoding="utf-8")
     (project_dir / "LICENSE").write_text("", encoding="utf-8")
+    (project_dir / "Build.py").write_text(BUILD_FILE_TEMPLATE, encoding="utf-8")
 
 
 # -----------------------------
