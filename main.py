@@ -8,10 +8,82 @@ import zipfile
 from pathlib import Path
 import argparse
 import importlib.util
+import requests
 
 GITHUB_OWNER = "HyperSonic-Games"
 GITHUB_REPO = "Magma"
 
+
+# -----------------------------
+# BUILD FILE TEMPLATE (FIXED)
+# -----------------------------
+
+BUILD_FILE_TEMPLATE = """
+import os
+import shutil
+from pathlib import Path
+
+import Magma.COPY_FILES as magma
+
+DEP_MODULES = [
+    magma
+]
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+BUILD_DIR = PROJECT_ROOT / "build"
+
+RUNTIME_OS = "windows" if os.name == "nt" else "unix"
+
+
+def match_os(rule_os: str | None) -> bool:
+    if rule_os is None:
+        return True
+    if rule_os == "windows":
+        return RUNTIME_OS == "windows"
+    if rule_os == "unix":
+        return RUNTIME_OS != "windows"
+    return False
+
+
+def resolve(p: str) -> Path:
+    if p.startswith("./"):
+        return (PROJECT_ROOT / p[2:]).resolve()
+    return (PROJECT_ROOT / "Magma" / "vendor" / p).resolve()
+
+
+def copy(src: Path, dst: Path):
+    if not src.exists():
+        raise RuntimeError(f"Missing file: {src}")
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+
+    print(f"[COPY] {src} -> {dst}")
+
+
+def run():
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+
+    for mod in DEP_MODULES:
+        for rule in mod.RULES:
+
+            if not match_os(rule.get("os")):
+                continue
+
+            src = resolve(rule["from"])
+            dst = BUILD_DIR / rule["to"]
+
+            copy(src, dst)
+
+
+if __name__ == "__main__":
+    run()
+"""
+
+
+# -----------------------------
+# MAIN TEMPLATE
+# -----------------------------
 
 MAIN_FILE_TEMPLATE = """
 package main
@@ -63,7 +135,7 @@ main :: proc() {
 
 
 # -----------------------------
-# GitHub download
+# DOWNLOAD
 # -----------------------------
 
 def download_zip(ref: str, out_path: Path):
@@ -110,6 +182,10 @@ def extract_and_normalize(zip_path: Path, project_dir: Path, repo_dir: str = "Ma
         shutil.rmtree(staging, ignore_errors=True)
 
 
+# -----------------------------
+# PROJECT SETUP
+# -----------------------------
+
 def setup_project_files(project_dir: Path):
     (project_dir / "assets").mkdir(parents=True, exist_ok=True)
     (project_dir / "main.odin").write_text(MAIN_FILE_TEMPLATE, encoding="utf-8")
@@ -118,18 +194,7 @@ def setup_project_files(project_dir: Path):
 
 
 # -----------------------------
-# Odin toolchain
-# -----------------------------
-
-def find_odin():
-    odin = shutil.which("odin")
-    if not odin:
-        raise RuntimeError("odin not found in PATH")
-    return odin
-
-
-# -----------------------------
-# Build.py pipeline hook
+# BUILD PIPELINE
 # -----------------------------
 
 def run_build_pipeline(project_dir: Path):
@@ -148,8 +213,15 @@ def run_build_pipeline(project_dir: Path):
 
 
 # -----------------------------
-# Build project
+# ODIN
 # -----------------------------
+
+def find_odin():
+    odin = shutil.which("odin")
+    if not odin:
+        raise RuntimeError("odin not found in PATH")
+    return odin
+
 
 def run_build(project_name: str, args: list[str]):
     project_dir = Path(project_name).resolve()
@@ -170,7 +242,6 @@ def run_build(project_name: str, args: list[str]):
 
     subprocess.run(cmd, cwd=project_dir, check=True)
 
-    # run asset pipeline (Build.py owns deps/copy logic)
     if not no_assets:
         run_build_pipeline(project_dir)
 
@@ -203,23 +274,8 @@ def run_build(project_name: str, args: list[str]):
 
 
 # -----------------------------
-# Create project
+# CREATE PROJECT
 # -----------------------------
-
-def download_zip(ref: str, out_path: Path):
-    import requests
-
-    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/zipball/{ref}"
-    headers = {"Accept": "application/vnd.github+json"}
-
-    r = requests.get(url, headers=headers, stream=True, timeout=60)
-    r.raise_for_status()
-
-    with out_path.open("wb") as f:
-        for chunk in r.iter_content(chunk_size=1024 * 256):
-            if chunk:
-                f.write(chunk)
-
 
 def create_project(ref: str, project_name: str):
     if ref == "none":
